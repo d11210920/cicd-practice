@@ -39,8 +39,6 @@ jobs:
           key: ${{ secrets.EC2_PRIVATE_KEY }}
           script: |
             cd ~/app
-
-            # 1. Determine current live version (blue or green)
             CURRENT_PORT=$(readlink /etc/nginx/conf.d/service.conf | grep -oE '808[1-2]')
             if [ "$CURRENT_PORT" == "8081" ]; then
               NEW_PORT=8082
@@ -49,29 +47,16 @@ jobs:
               NEW_PORT=8081
               NEW_VERSION="blue"
             fi
-
-            echo ">>> Deploying $NEW_VERSION on port $NEW_PORT"
-
-            # 2. Build and run new version
             docker stop spring-$NEW_VERSION || true
             docker rm spring-$NEW_VERSION || true
             docker build -t spring-app .
             docker run -d -p $NEW_PORT:8080 --name spring-$NEW_VERSION spring-app
-
-            # 3. Health check
-            echo ">>> Waiting for new container to start..."
             sleep 10
             curl -f http://localhost:$NEW_PORT || (echo "Health check failed" && exit 1)
-
-            # 4. Switch nginx config
             sudo ln -sf /etc/nginx/conf.d/bluegreen/service-$NEW_VERSION.conf /etc/nginx/conf.d/service.conf
             sudo nginx -t && sudo nginx -s reload
-
-            # 5. Stop old version
             if [ "$NEW_VERSION" == "green" ]; then
               docker stop spring-blue || true && docker rm spring-blue || true
             else
               docker stop spring-green || true && docker rm spring-green || true
             fi
-
-            echo ">>> Blue-Green deployment completed. Now serving: $NEW_VERSION"
