@@ -1,0 +1,45 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v3
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Build with Gradle (skip tests)
+        run: ./gradlew clean build -x test
+
+      - name: Upload JAR & Dockerfile to EC2
+        uses: appleboy/scp-action@v0.1.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_PRIVATE_KEY }}
+          source: "build/libs/*.jar,Dockerfile"
+          target: "~/app"
+          flatten: true  # ✅ 꼭 넣자: ~/app에 바로 복사되도록
+
+      - name: SSH into EC2 and deploy
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_PRIVATE_KEY }}
+          script: |
+            cd ~/app
+            docker stop spring-app || true
+            docker rm spring-app || true
+            docker build -t spring-app .
+            docker run -d -p 8080:8080 --name spring-app spring-app
