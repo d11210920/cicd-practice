@@ -1,4 +1,4 @@
-name: Deploy to EC2
+name: Blue-Green Deploy to EC2
 
 on:
   push:
@@ -29,9 +29,9 @@ jobs:
           key: ${{ secrets.EC2_PRIVATE_KEY }}
           source: "build/libs/*.jar,Dockerfile"
           target: "~/app"
-          flatten: true  # ✅ 꼭 넣자: ~/app에 바로 복사되도록
+          flatten: true
 
-      - name: SSH into EC2 and deploy
+      - name: SSH into EC2 and deploy Blue-Green
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -39,7 +39,39 @@ jobs:
           key: ${{ secrets.EC2_PRIVATE_KEY }}
           script: |
             cd ~/app
-            docker stop spring-app || true
-            docker rm spring-app || true
+
+            # 1. Determine current live version (blue or green)
+            CURRENT_PORT=$(readlink /etc/nginx/conf.d/service.conf | grep -oE '808[1-2]')
+            if [ "$CURRENT_PORT" == "8081" ]; then
+              NEW_PORT=8082
+              NEW_VERSION="green"
+            else
+              NEW_PORT=8081
+              NEW_VERSION="blue"
+            fi
+
+            echo ">>> Deploying $NEW_VERSION on port $NEW_PORT"
+
+            # 2. Build and run new version
+            docker stop spring-$NEW_VERSION || true
+            docker rm spring-$NEW_VERSION || true
             docker build -t spring-app .
-            docker run -d -p 8080:8080 --name spring-app spring-app
+            docker run -d -p $NEW_PORT:8080 --name spring-$NEW_VERSION spring-app
+
+            # 3. Health check
+            echo ">>> Waiting for new container to start..."
+            sleep 10
+            curl -f http://localhost:$NEW_PORT || (echo "Health check failed" && exit 1)
+
+            # 4. Switch nginx config
+            sudo ln -sf /etc/nginx/conf.d/bluegreen/service-$NEW_VERSION.conf /etc/nginx/conf.d/service.conf
+            sudo nginx -t && sudo nginx -s reload
+
+            # 5. Stop old version
+            if [ "$NEW_VERSION" == "green" ]; then
+              docker stop spring-blue || true && docker rm spring-blue || true
+            else
+              docker stop spring-green || true && docker rm spring-green || true
+            fi
+
+            echo ">>> Blue-Green deployment completed. Now serving: $NEW_VERSION"
